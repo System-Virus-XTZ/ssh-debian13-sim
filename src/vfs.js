@@ -70,7 +70,10 @@ const FS = {
   '/usr': dir(0o755, 'root', ['bin', 'lib', 'local', 'sbin', 'share']),
   '/usr/sbin': dir(0o755, 'root', ['sshd', 'nginx', 'cron', 'useradd', 'userdel', 'passwd']),
   '/usr/lib/systemd': dir(0o755, 'root', ['system']),
-  '/usr/lib/systemd/system': dir(0o755, 'root', ['anxi.service', 'ssh.service', 'cron.service', 'nginx.service', 'happiness.service']),
+  '/usr/lib/systemd/system': dir(0o755, 'root', ['anxi.service', 'ssh.service', 'cron.service', 'nginx.service', 'happiness.service', 'docker.service', 'containerd.service', 'fail2ban.service']),
+  '/usr/lib/systemd/system/docker.service': file(0o644, 'root', '[Unit]\nDescription=Docker Application Container Engine\nAfter=network-online.target docker.socket\n[Service]\nExecStart=/usr/bin/dockerd -H fd://\nRestart=always\n[Install]\nWantedBy=multi-user.target\n'),
+  '/usr/lib/systemd/system/containerd.service': file(0o644, 'root', '[Unit]\nDescription=containerd container runtime\n[Service]\nExecStart=/usr/bin/containerd\n[Install]\nWantedBy=multi-user.target\n'),
+  '/usr/lib/systemd/system/fail2ban.service': file(0o644, 'root', '[Unit]\nDescription=Fail2Ban Service\nAfter=network.target\n[Service]\nExecStart=/usr/bin/fail2ban-server -xf start\n[Install]\nWantedBy=multi-user.target\n'),
   '/usr/lib/systemd/system/anxi.service': file(0o644, 'root', `[Unit]
 Description=anxi agent service
 After=network.target
@@ -120,7 +123,13 @@ WantedBy=multi-user.target
   '/usr/share/doc': dir(0o755, 'root', []),
   '/usr/share/man': dir(0o755, 'root', []),
   '/var': dir(0o755, 'root', ['log', 'lib', 'run', 'spool', 'tmp']),
-  '/var/lib': dir(0o755, 'root', ['dpkg', 'systemd', 'apt']),
+  '/var/lib': dir(0o755, 'root', ['dpkg', 'systemd', 'apt', 'docker']),
+  '/var/lib/docker': dir(0o710, 'root', ['containers', 'image', 'network', 'overlay2', 'volumes']),
+  '/var/lib/docker/containers': dir(0o710, 'root', []),
+  '/var/lib/docker/image': dir(0o710, 'root', []),
+  '/var/lib/docker/overlay2': dir(0o710, 'root', []),
+  '/var/lib/docker/network': dir(0o710, 'root', []),
+  '/var/lib/docker/volumes': dir(0o710, 'root', []),
   '/var/lib/dpkg': dir(0o755, 'root', ['status', 'available']),
   '/var/lib/dpkg/status': file(0o644, 'root', `Package: bash
 Status: install ok installed
@@ -148,10 +157,16 @@ Description: secure shell (SSH) server, for secure access from remote machines
   '/var/lib/apt': dir(0o755, 'root', ['lists', 'extended_states']),
   '/var/lib/apt/lists': dir(0o755, 'root', ['deb.debian.org_debian_dists_trixie_InRelease']),
   '/var/lib/apt/extended_states': file(0o644, 'root', ''),
-  '/var/run': dir(0o755, 'root', []),
+  '/var/run': dir(0o755, 'root', ['docker.sock', 'sshd.pid', 'systemd']),
+  '/var/run/docker.sock': file(0o660, 'root', ''),
+  '/var/run/sshd.pid': file(0o644, 'root', '512\n'),
+  '/var/run/systemd': dir(0o755, 'root', []),
   '/var/spool': dir(0o755, 'root', []),
   '/var/tmp': dir(0o1777, 'root', []),
-  '/var/log': dir(0o755, 'root', ['auth.log', 'kern.log', 'syslog']),
+  '/var/log': dir(0o755, 'root', ['auth.log', 'btmp', 'kern.log', 'lastlog', 'syslog', 'wtmp']),
+  '/var/log/wtmp': file(0o664, 'root', 'wtmp\u0000\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\n'),
+  '/var/log/btmp': file(0o660, 'root', 'btmp\u0000\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\n'),
+  '/var/log/lastlog': file(0o664, 'root', ''),
   '/var/log/syslog': file(0o640, 'root', `Jan  1 00:00:01 anxi systemd[1]: Started Daily apt download activities.
 Jan  1 00:00:02 anxi kernel: [    0.000000] Linux version 6.12.57-armmp (debian-kernel@lists.debian.org) #1 SMP Debian 6.12.57-1
 Jan  1 00:00:03 anxi systemd[1]: Reached target Multi-User System.
@@ -183,7 +198,7 @@ BUG_REPORT_URL="https://bugs.debian.org/"
   '/etc/hostname': file(0o644, 'root', 'anxi\n'),
   '/etc/hosts': file(0o644, 'root', '127.0.0.1\tlocalhost\n127.0.1.1\tanxi\n192.168.2.171\tanxi.lan anxi\n'),
   '/etc/passwd': file(0o644, 'root', 'root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nguest:x:1000:1000:Guest:/home/guest:/bin/bash\nanxi:x:1001:1001:Anxi:/home/anxi:/bin/bash\n'),
-  '/etc/group': file(0o644, 'root', 'root:x:0:\nsudo:x:27:guest\nguest:x:1000:\n'),
+  '/etc/group': file(0o644, 'root', 'root:x:0:\nsudo:x:27:\ndocker:x:999:\nusers:x:100:\nguest:x:1000:\n'),
   '/etc/shadow': file(0o640, 'root', 'root:!:19000:0:99999:7:::\nguest:$6$anxi$fakehashfakehash:19000:0:99999:7:::\n'),
   '/etc/resolv.conf': file(0o644, 'root', 'nameserver 223.5.5.5\nnameserver 119.29.29.29\n'),
   '/etc/nsswitch.conf': file(0o644, 'root', 'passwd:         files systemd\ngroup:          files systemd\nshadow:         files\nhosts:          files mdns4_minimal [NOTFOUND=return] dns\nnetworks:       files\nprotocols:      db files\nservices:       db files\nethers:         db files\nrpc:            db files\n'),
@@ -198,6 +213,25 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 47 6	* * 7	root	test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.weekly )
 52 6	1 * *	root	test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.monthly )
 `),
+  '/etc/fail2ban': dir(0o755, 'root', ['action.d', 'filter.d', 'jail.conf', 'jail.d', 'jail.local']),
+  '/etc/fail2ban/jail.conf': file(0o644, 'root', `[DEFAULT]
+bantime  = 10m
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port    = ssh
+logpath = %(sshd_log)s
+`),
+  '/etc/fail2ban/jail.local': file(0o644, 'root', '# local overrides\n[DEFAULT]\nbantime = 10m\nmaxretry = 5\n'),
+  '/etc/fail2ban/jail.d': dir(0o755, 'root', ['defaults-debian.conf']),
+  '/etc/fail2ban/jail.d/defaults-debian.conf': file(0o644, 'root', '[sshd]\nenabled = true\n'),
+  '/etc/fail2ban/action.d': dir(0o755, 'root', ['iptables-multiport.conf']),
+  '/etc/fail2ban/action.d/iptables-multiport.conf': file(0o644, 'root', '[Definition]\nactionstart = iptables -w -N f2b-<name>\nactionstop = iptables -w -D <name> -j REJECT\n'),
+  '/etc/fail2ban/filter.d': dir(0o755, 'root', ['sshd.conf']),
+  '/etc/fail2ban/filter.d/sshd.conf': file(0o644, 'root', '[Definition]\nfailregex = ^Failed password for .* from <HOST> port \\d+ ssh2\n'),
   '/etc/fstab': file(0o644, 'root', '/dev/mmcblk1p2 / ext4 defaults,noatime 0 1\n/dev/mmcblk1p1 /boot vfat defaults 0 2\ntmpfs /tmp tmpfs defaults 0 0\n'),
   '/etc/profile': file(0o644, 'root', '# /etc/profile\nexport PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n'),
   '/etc/motd': file(0o644, 'root', `Linux anxi 6.12.57-armmp #1 SMP Debian 6.12.57-1 (2026-01-15) armv7l

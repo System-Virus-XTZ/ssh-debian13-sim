@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const { FakeShell } = require('./shell');
 const { loadUsers, verifyPassword } = require('./users');
+const audit = require('./audit');
 const { attachFakeSftp } = require('./sftp');
 
 const PORT = Number(process.env.PORT || 8822);
@@ -54,15 +55,29 @@ const server = new Server(
   },
   (client) => {
     let authFails = 0;
+    const remoteIp = () => {
+      try {
+        return (client._sock && client._sock.remoteAddress) || client.remoteAddress || '127.0.0.1';
+      } catch { return '127.0.0.1'; }
+    };
+
     client.on('authentication', (ctx) => {
+      const ip = remoteIp();
       const current = loadUsers();      // 每次认证读盘，root 新加的账号立即可用
       const expected = current[ctx.username];
+
+      // 已被 fail2ban 封禁：直接拒，不给试密码
+      if (audit.isBlocked(ip)) {
+        setTimeout(() => ctx.reject(['publickey']), 800);
+        return;
+      }
 
       // 不存在的用户：和真 OpenSSH 一样直接拒绝，不提供可用认证方式，
       // 客户端因此不会弹密码框（只会显示 Permission denied）
       if (expected === undefined) {
-        if (process.env.DEBUG) console.error(`[auth] unknown user ${ctx.username}`);
-        return ctx.reject(['publickey']);
+        audit.recordFailure(`invalid user ${ctx.username}`, ip);
+        setTimeout(() => ctx.reject(['publickey']), 1000 + Math.random() * 500);
+        return;
       }
 
       // 已知用户：只提供 password 方式
@@ -70,16 +85,24 @@ const server = new Server(
 
       if (verifyPassword(ctx.password, expected)) {
         client._sshUser = ctx.username;   // 给 session 用
+        audit.recordSuccess(ctx.username, ip);
         return ctx.accept();
       }
 
-      // 密码错误：最多 3 次（类似 sshd 的 MaxAuthTries 行为）
+      // 密码错误：1 秒延迟（对标 sshd 的失败延迟），最多 3 次
+      audit.recordFailure(ctx.username, ip);
       authFails++;
       if (authFails >= 3) {
-        client.end();
+        setTimeout(() => {
+          try { client.end(); } catch {}
+        }, 1000);
         return;
       }
-      return ctx.reject(['password']);
+      setTimeout(() => ctx.reject(['password']), 1000);
+    });
+
+    client.on('close', () => {
+      if (client._sshUser) audit.recordLogout(client._sshUser);
     });
 
     client.on('ready', () => {

@@ -10,6 +10,7 @@
 const vfs = require('./vfs');
 const users = require('./users');
 const crypto = require('crypto');
+const audit = require('./audit');
 
 const { USER, HOST, HOME } = vfs;
 
@@ -20,7 +21,7 @@ const COMMANDS = [
   'ss', 'netstat', 'ip', 'ifconfig', 'ping', 'curl', 'wget',
   'systemctl', 'journalctl', 'service', 'dmesg', 'crontab',
   'mkdir', 'rmdir', 'rm', 'mv', 'cp', 'touch', 'ln', 'chmod', 'chown', 'tee',
-  'sudo', 'su', 'apt', 'apt-get', 'dpkg', 'hostnamectl', 'lsblk', 'mount', 'ssh-keygen', 'reboot', 'shutdown', 'poweroff', 'passwd', 'useradd', 'userdel', 'usermod', 'su',
+  'sudo', 'su', 'apt', 'apt-get', 'dpkg', 'hostnamectl', 'lsblk', 'mount', 'ssh-keygen', 'docker', 'fail2ban-client', 'lastb', 'reboot', 'shutdown', 'poweroff', 'passwd', 'useradd', 'userdel', 'usermod', 'su',
   'history', 'alias', 'unalias', 'export', 'env', 'printenv', 'echo', 'sleep', 'true', 'false', 'awk', 'sed', 'htop', 'nproc', 'lscpu', 'vmstat', 'iostat', 'mpstat', 'net',
   'clear', 'exit', 'logout', 'vim', 'vi', 'nano', 'less', 'more', 'man', 'git', 'tty', 'which', 'type',
 ];
@@ -452,6 +453,10 @@ class FakeShell {
       if (!d) return { denied: `No such file or directory` };
       if (d.node.type !== 'dir') return { denied: 'Not a directory' };
       if (!vfs.canExecDir(d, this.user)) return { denied: 'Permission denied' };
+    }
+    if (abs === '/var/log/auth.log') {
+      if (this.user !== 'root') return { denied: 'Permission denied' };
+      return { content: audit.authLogContent(), node: vfs.nodeAt(abs).node, path: abs };
     }
     if (abs === '/etc/passwd') return { content: this.renderPasswd(), node: vfs.nodeAt(abs).node, path: abs };
     if (abs === '/etc/group') return { content: this.renderGroup(), node: vfs.nodeAt(abs).node, path: abs };
@@ -913,6 +918,164 @@ class FakeShell {
     return { err: 'dpkg: error: need an action option\r\n', code: 2 };
   }
 
+  // ── 登录审计 / fail2ban ──
+  _fmtLastTime(at) {
+    const d = new Date(at);
+    const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+    const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${wd} ${mon} ${String(d.getDate()).padStart(2, ' ')} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  cmd_last({ args }) {
+    const recs = [...audit.state.logins].reverse().slice(0, args[0] ? Number(args[0]) || 10 : 10);
+    const lines = [];
+    for (const r of recs) {
+      const start = this._fmtLastTime(r.at);
+      if (r.outAt === null) {
+        lines.push(`${r.user.padEnd(8)} pts/0        ${(r.ip || '10.0.0.2').padEnd(15)} ${start}   still logged in`);
+      } else {
+        const d = new Date(r.outAt);
+        const end = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        lines.push(`${r.user.padEnd(8)} pts/0        ${(r.ip || '10.0.0.2').padEnd(15)} ${start} - ${end}  (${audit.fmtDuration(r.outAt - r.at)})`);
+      }
+    }
+    lines.push('');
+    lines.push('wtmp begins Sat Oct 31 22:41:03 2026');
+    return { out: lines.join('\r\n') + '\r\n' };
+  }
+
+  cmd_lastb({ args }) {
+    const recs = [...audit.state.failures].reverse().slice(0, args[0] ? Number(args[0]) || 10 : 10);
+    if (!recs.length) {
+      return { out: '\r\nbtmp begins Sat Oct 31 22:41:03 2026\r\n' };
+    }
+    const lines = recs.map((r) => `${(r.user.startsWith('invalid') ? r.user.split(' ').pop() : r.user).padEnd(8)} ssh:notty    ${(r.ip || '10.0.0.2').padEnd(15)} ${this._fmtLastTime(r.at)} - ${String(new Date(r.at).getHours()).padStart(2, '0')}:${String(new Date(r.at).getMinutes()).padStart(2, '0')}  (00:00)`);
+    lines.push('');
+    lines.push('btmp begins Sat Oct 31 22:41:03 2026');
+    return { out: lines.join('\r\n') + '\r\n' };
+  }
+
+  cmd_fail2ban_client({ args }) {
+    if (this.user !== 'root') {
+      return { err: `ERROR  Failed to access socket path: /var/run/fail2ban/fail2ban.sock. Is fail2ban running?\r\n`, code: 255 };
+    }
+    const sub = args[0] || 'status';
+    const st = audit.statusText();
+    if (sub === 'status' && !args[1]) {
+      return { out: [
+        'Status',
+        `|- Number of jail:      ${st.jailed ? 1 : 0}`,
+        `\`- Jail list:           ${st.jailed ? 'sshd' : ''}`,
+      ].join('\r\n') + '\r\n' };
+    }
+    if (sub === 'status' && args[1] === 'sshd') {
+      const banned = st.banned.map(([ip]) => ip);
+      return { out: [
+        'Status for the jail: sshd',
+        '|- Filter',
+        '|  |- Currently failed: ' + st.failures,
+        '|  |- Total failed:     ' + st.failures,
+        '|  `- Journal matches:  _SYSTEMD_UNIT=ssh.service + _COMM=sshd',
+        '`- Actions',
+        '   |- Currently banned: ' + banned.length,
+        '   |- Total banned:     ' + banned.length,
+        '   `- Banned IP list:    ' + (banned.length ? banned.join(' ') : ''),
+      ].join('\r\n') + '\r\n' };
+    }
+    return { err: 'Usage: fail2ban-client [OPTIONS] <COMMAND>\r\n', code: 255 };
+  }
+
+  // ── docker（假实现，输出像真的）──
+  cmd_docker({ args }) {
+    const sub = args[0] || '';
+    const flags = args.filter((a) => a.startsWith('-')).join('');
+    const DB = {
+      containers: [
+        { id: 'a1b2c3d4e5f6', image: 'nginx:1.26', name: 'anxi-web', status: 'Exited (0) 2 days ago', state: 'exited' },
+        { id: '0f1e2d3c4b5a', image: 'debian:trixie', name: 'anxi-task', status: 'Exited (137) 25 hours ago', state: 'exited' },
+      ],
+      images: [
+        { repo: 'debian', tag: 'trixie', id: 'sha256:9f2c1d', size: '124MB' },
+        { repo: 'nginx', tag: '1.26', id: 'sha256:7a3b2c', size: '192MB' },
+        { repo: 'node', tag: '22-alpine', id: 'sha256:5d4e3f', size: '135MB' },
+      ],
+    };
+    if (sub === 'ps' || (sub === 'container' && args[1] === 'ls')) {
+      const all = flags.includes('a');
+      const lines = ['CONTAINER ID   IMAGE           COMMAND                  CREATED        STATUS                     PORTS     NAMES'];
+      for (const c of DB.containers) {
+        if (!all && c.state !== 'running') continue;
+        lines.push(`${c.id}   ${c.image.padEnd(15)} "nginx -g 'daemon of…"   2 days ago     ${c.status.padEnd(26)}           ${c.name}`);
+      }
+      return { out: lines.join('\r\n') + '\r\n' };
+    }
+    if (sub === 'images') {
+      const lines = ['REPOSITORY   TAG        IMAGE ID       CREATED       SIZE'];
+      for (const i of DB.images) lines.push(`${i.repo.padEnd(12)} ${i.tag.padEnd(10)} ${i.id}   13 days ago   ${i.size}`);
+      return { out: lines.join('\r\n') + '\r\n' };
+    }
+    if (sub === 'version') {
+      return { out: [
+        'Client: Docker Engine - Community',
+        ' Version:           28.4.0',
+        ' API version:       1.51',
+        ' Go version:        go1.24.6',
+        ' OS/Arch:           linux/arm',
+        '',
+        'Server: Docker Engine - Community',
+        ' Engine:',
+        '  Version:          28.4.0',
+        '  API version:      1.51 (minimum version 1.24)',
+        '  Go version:       go1.24.6',
+        '  OS/Arch:          linux/arm',
+        '  Experimental:     false',
+        ' containerd:',
+        '  Version:          v2.1.3',
+        ' runc:',
+        '  Version:          1.3.0',
+      ].join('\r\n') + '\r\n' };
+    }
+    if (sub === 'info') {
+      return { out: [
+        'Client: Docker Engine - Community',
+        ' Version:    28.4.0',
+        ' Context:    default',
+        ' Debug Mode: false',
+        '',
+        'Server:',
+        ' Containers: 2',
+        '  Running: 0',
+        '  Paused: 0',
+        '  Stopped: 2',
+        ' Images: 3',
+        ' Server Version: 28.4.0',
+        ' Storage Driver: overlay2',
+        ' Cgroup Driver: systemd',
+        ' Cgroup Version: 2',
+        ' Kernel Version: 6.12.57-armmp',
+        ' Operating System: Debian GNU/Linux 13 (trixie)',
+        ' OSType: linux',
+        ' Architecture: armv7l',
+        ' CPUs: 4',
+        ' Total Memory: 983.4MiB',
+        ' Name: anxi',
+      ].join('\r\n') + '\r\n' };
+    }
+    if (sub === 'run') {
+      const image = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'debian:trixie';
+      return { err: `Unable to find image '${image}' locally\r\ndocker: Error response from daemon: Get "https://registry-1.docker.io/v2/": net/http: request canceled while waiting for connection (Client.Timeout exceeded while awaiting headers).\r\n\r\nRun 'docker run --help' for more information\r\n`, code: 125 };
+    }
+    if (sub === 'stop' || sub === 'rm' || sub === 'kill') {
+      const target = args[1] || '';
+      return { err: `Error response from daemon: No such container: ${target}\r\n`, code: 1 };
+    }
+    if (sub === 'logs') {
+      return { err: `Error response from daemon: No such container: ${args[1] || ''}\r\n`, code: 1 };
+    }
+    return { out: 'Usage:  docker [OPTIONS] COMMAND\r\n\r\nManagement Commands:\r\n  container   Manage containers\r\n  image       Manage images\r\n  network     Manage networks\r\n  volume      Manage volumes\r\n\r\nCommands:\r\n  ps          List containers\r\n  images      List images\r\n  run         Create and run a new container from an image\r\n  info        Display system-wide information\r\n  version     Show the Docker version information\r\n' };
+  }
+
   cmd_ssh_keygen({ args }) {
     let file = null;
     for (let i = 0; i < args.length; i++) {
@@ -1075,15 +1238,10 @@ class FakeShell {
 
   cmd_w() {
     const t = T();
-    return { out: ` ${t.clock} up ${vfs.fmtUptime(vfs.fakeStats().uptimeSec)},  1 user,  load average: 0.72, 0.55, 0.41\r\nUSER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\r\n${this.user}    pts/0    192.168.2.171    19:00    0.00s  0.12s  0.00s sshd: ${this.user} [priv]\r\n` };
+    return { out: ` ${t.clock} up ${vfs.fmtUptime(vfs.fakeStats().uptimeSec)},  1 user,  load average: 0.72, 0.55, 0.41\r\nUSER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\r\n${this.user}    pts/0    10.0.0.2       19:00    0.00s  0.12s  0.00s sshd: ${this.user} [priv]\r\n` };
   }
 
-  cmd_who() { return { out: `${this.user}    pts/0        2026-11-01 19:00 (192.168.2.171)\r\n` }; }
-
-  cmd_last() {
-    const t = T();
-    return { out: `${this.user.padEnd(8)} pts/0        192.168.2.171    ${t.date.slice(4, 16)}   still logged in\r\nguest    pts/0        192.168.2.171    Sat Oct 31 22:41 - 23:02  (00:21)\r\n\r\nwtmp begins Sat Oct 31 22:41:03 2026\r\n` };
-  }
+  cmd_who() { return { out: `${this.user}    pts/0        2026-11-01 19:00 (10.0.0.2)\r\n` }; }
 
   cmd_ss({ args }) {
     const t = args.join('');
@@ -1242,12 +1400,15 @@ class FakeShell {
       return { out: [
         'UNIT FILE                 STATE    PRESET',
         'anxi.service              enabled  enabled',
+        'containerd.service        enabled  enabled',
         'cron.service              enabled  enabled',
+        'docker.service            enabled  enabled',
+        'fail2ban.service          enabled  enabled',
         'happiness.service         enabled  enabled',
         'nginx.service             enabled  enabled',
         'ssh.service               enabled  enabled',
         '',
-        '5 unit files listed.',
+        '8 unit files listed.',
       ].join('\r\n') + '\r\n' };
     }
     if (sub === 'is-active') {
@@ -1586,6 +1747,8 @@ class FakeShell {
       '  网络：  ip  ifconfig  ss  netstat  ping  curl  wget',
       '  服务：  systemctl  service  journalctl  dmesg  crontab  dpkg  apt',
   '  硬件：  lsblk  mount  hostnamectl  ssh-keygen -l -f',
+  '  审计：  last  lastb  fail2ban-client status sshd（/var/log/auth.log 也有记录）',
+  '  容器：  docker ps/images/version/info（假实现）',
   '  账号：  passwd  useradd  userdel（需要 root；真改 users.json，密码仍哈希）',
       '  文本：  awk  sed  sort  uniq  cut  tr（部分实现）  htop 彩色版',
   '  其他：  history  alias  unalias  export  env  printenv  echo  sleep  true  false  clear  exit',

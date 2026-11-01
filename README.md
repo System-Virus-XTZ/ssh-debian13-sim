@@ -54,6 +54,8 @@ ssh root@你的主机 -p 8822   # 密码 happy1024（uid 0，能读 /etc/shadow�
 | 系统 | `uname -a` `hostname` `uptime` `date` `whoami` `id` `groups` `who` `w` `last` `ps aux` `top` `free -h` `kill` `pgrep` |
 | 资源 | `df -h` `free` `top` `htop`（彩色）`nproc` `lscpu` `vmstat` `mpstat` `iostat` `net`（随机假数据） |
 | 硬件/主机 | `hostnamectl` `lsblk` `mount` `ssh-keygen -lf` |
+| 安全审计 | `last` `lastb` `fail2ban-client status [sshd]`（/var/log/auth.log 动态生成） |
+| 容器 | `docker ps/images/version/info/run`（假实现，输出像真的） |
 | 网络 | `ip a` `ifconfig` `ss -tlnp` `netstat` `ping`（随机丢包）`curl`（随机状态码/连接失败）`wget` |
 | 服务 | `systemctl status/cat/list-unit-files` `service` `journalctl` `dmesg` `crontab` `dpkg -l/-s` `apt update/install/list` |
 | 内置 | `history` `alias` `unalias` `export` `env` `printenv` `echo` `sleep` `true` `false` `clear` `exit` |

@@ -90,7 +90,9 @@ ssh root@你的主机 -p 8822   # 密码 happy1024（uid 0，能读 /etc/shadow�
 - 参数：scrypt N=16384, r=8, p=1, keylen=64，每个密码独立随机 salt
 - 校验用 `crypto.timingSafeEqual`，防时序侧信道
 - **懒人模式**：如果往 users.json 里直接写明文密码，启动时会自动哈希并写回（日志会提示迁移了几个）
-- 用户名不在表里或密码不对 → `All configured authentication methods failed`（不区分是用户名错还是密码错）
+- **不存在的用户名**：和真 OpenSSH 一样直接拒绝、不弹密码框（客户端只显示
+  `Permission denied (publickey).`）
+- 已知用户密码错：最多让试 3 次，超过后连接被断开（类似 `MaxAuthTries`）
 - 每个账号有独立的 home（`/home/guest`、`/home/anxi`）、uid、提示符、SFTP 根目录
 
 ### root 账号的"特权"

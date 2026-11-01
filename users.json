@@ -1,6 +1,0 @@
-{
-  "comment": "SSH 登录账号表：用户名 -> scrypt 密码哈希。改完 systemctl restart ssh-game 生效。",
-  "users": {
-    "root": "scrypt$16384$8$1$272ac5c5c3994d26151993534d705dbf$175e7a63e1997c49b6f0e31acf44050e4ecb4be9d4e2aabb905214e4e53086400bb985ae596b8288ffc79bec37b04a49ad140a5a9acf87cbf5a9e8e944c414a1"
-  }
-}

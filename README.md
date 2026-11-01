@@ -39,11 +39,17 @@ npm install
 连接（账号见 `users.json`）：
 
 ```bash
-ssh root@你的主机 -p 8822   # 密码 happy1024（uid 0，能读 /etc/shadow、能 restart 服务）
+# 首次部署：创建账号表
+cp users.example.json users.json
+node scripts/add-user.js root '你的密码'
+systemctl restart ssh-game
+
+# 连接
+ssh root@你的主机 -p 8822     # 密码为你设置的密码
 ```
 
-> 当前 users.json 里只有 `root` 一个账号。叫 root 的账号自动拥有 root 权限。
-> 要加账号：`node scripts/add-user.js 用户名 '密码'` 然后重启服务。
+> `users.json` 不在仓库里（含密码哈希，已 gitignore）。叫 root 的账号自动拥有 root 权限。
+> 加账号：`node scripts/add-user.js 用户名 '密码'`，无需重启即可登录（认证时重新读盘）。
 
 > 所有负载数据（CPU / 内存 / 磁盘 / 网络 / 进程 / uptime）都是**随机生成的假数据**：
 > 每次调用重新随机，范围参考一台 4 核 1GB 小机器，看起来合理但和真机无关。

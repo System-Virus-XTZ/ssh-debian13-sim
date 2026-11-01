@@ -21,6 +21,8 @@ const audit = require('./audit');
 const { attachFakeSftp } = require('./sftp');
 
 const PORT = Number(process.env.PORT || 8822);
+const MAX_CONNECTIONS = Number(process.env.MAX_CONNECTIONS || 50);   // 最大并发连接
+const CONN_RATE_PER_MIN = Number(process.env.CONN_RATE_PER_MIN || 20); // 每 IP 每分钟最多新建连接
 // ── 账号表（users.json，密码为 scrypt 哈希；明文会自动迁移）──
 const USERS = loadUsers();
 const HOST = process.env.HOST || '0.0.0.0';
@@ -47,6 +49,9 @@ function loadHostKey() {
 
 const hostKey = loadHostKey();
 
+let activeConnections = 0;
+const connRates = new Map();   // ip -> { count, resetAt }
+
 const server = new Server(
   {
     hostKeys: [hostKey],
@@ -54,6 +59,31 @@ const server = new Server(
     ident: 'OpenSSH_10.2p1 Debian-2+deb13u1',
   },
   (client) => {
+    // ── 并发连接上限（防连接耗尽）──
+    const clientIp = (() => {
+      try { return (client._sock && client._sock.remoteAddress) || '127.0.0.1'; } catch { return '127.0.0.1'; }
+    })();
+    if (activeConnections >= MAX_CONNECTIONS) {
+      if (process.env.DEBUG) console.error('[limit] too many connections');
+      client._connLimited = 'Too many concurrent connections';
+    }
+    activeConnections++;
+    let counted = true;
+    const dec = () => { if (counted) { counted = false; activeConnections--; } };
+    client.on('close', dec);
+    client.on('error', dec);
+
+    // ── 每 IP 新建连接频率限制（防快速重连）──
+    const nowConn = Date.now();
+    const rate = connRates.get(clientIp) || { count: 0, resetAt: nowConn + 60000 };
+    if (nowConn > rate.resetAt) { rate.count = 0; rate.resetAt = nowConn + 60000; }
+    rate.count++;
+    connRates.set(clientIp, rate);
+    if (rate.count > CONN_RATE_PER_MIN) {
+      if (process.env.DEBUG) console.error(`[limit] ${clientIp} connection rate exceeded`);
+      client._connLimited = 'Too many connections from your address';
+    }
+
     let authFails = 0;
     const remoteIp = () => {
       try {
@@ -63,6 +93,13 @@ const server = new Server(
 
     client.on('authentication', (ctx) => {
       const ip = remoteIp();
+
+      // 被限流的连接：握手后干净拒绝（不会让客户端卡到超时）
+      if (client._connLimited) {
+        // 只拒绝、不断开：客户端会报 "Permission denied (publickey)"，不会卡住
+        setTimeout(() => { try { ctx.reject(['publickey']); } catch {} }, 500);
+        return;
+      }
       const current = loadUsers();      // 每次认证读盘，root 新加的账号立即可用
       const expected = current[ctx.username];
 
@@ -89,16 +126,17 @@ const server = new Server(
         return ctx.accept();
       }
 
-      // 密码错误：1 秒延迟（对标 sshd 的失败延迟），最多 3 次
+      // 密码错误：指数退避（1s, 2s, 4s…上限 5s），最多 3 次
       audit.recordFailure(ctx.username, ip);
       authFails++;
+      const delay = Math.min(1000 * 2 ** (authFails - 1), 5000);
       if (authFails >= 3) {
         setTimeout(() => {
           try { client.end(); } catch {}
-        }, 1000);
+        }, delay);
         return;
       }
-      setTimeout(() => ctx.reject(['password']), 1000);
+      setTimeout(() => ctx.reject(['password']), delay);
     });
 
     client.on('close', () => {

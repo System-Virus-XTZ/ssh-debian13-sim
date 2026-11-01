@@ -7,6 +7,28 @@
 
 'use strict';
 
+const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 5 * 1024 * 1024);      // 单文件 5MB
+const MAX_TOTAL_BYTES = Number(process.env.MAX_TOTAL_BYTES || 50 * 1024 * 1024);   // 总配额 50MB
+const MAX_FILES = Number(process.env.MAX_FILES || 2000);                            // 文件数上限
+
+/** 去掉控制字符（保留 \n \t），防止终端转义注入 / 日志伪造 */
+function sanitizeText(str) {
+  return String(str).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+/** 文件名净化：只保留可见字符 */
+function sanitizeName(name) {
+  return String(name).replace(/[\x00-\x1f\x7f]/g, '');
+}
+
+/** 当前虚拟文件系统占用（字节 + 文件数） */
+function fsUsage() {
+  let bytes = 0, count = 0;
+  for (const [k, v] of Object.entries(FS)) {
+    if (v.type === 'file') { bytes += Buffer.byteLength(v.content || '', 'utf8'); count++; }
+  }
+  return { bytes, count };
+}
+
 const USER = 'guest';
 const HOST = 'anxi';
 const HOME = '/home/guest';
@@ -495,34 +517,52 @@ function parentDir(path) {
 }
 
 function createFile(path, content, user, mode = 0o644) {
+  const safe = sanitizeText(content);
+  const bytes = Buffer.byteLength(safe, 'utf8');
+  if (bytes > MAX_FILE_BYTES) return { error: 'EFBIG' };
   const parent = parentDir(path);
   if (!parent) return { error: 'ENOENT' };
   if (!mayWrite(path, user)) return { error: 'EACCES' };
-  if (FS[path]) {
-    if (FS[path].type === 'dir') return { error: 'EISDIR' };
-    if (FS[path].owner !== user && user !== 'root') return { error: 'EACCES' };
-    FS[path].content = content;
-    FS[path].mtime = now();
-    return { ok: true };
+  const target = sanitizeName(baseName(path));
+  if (!target || /[\/]/.test(target)) return { error: 'EACCES' };
+  const safePath = parentPath(path) === '/' ? `/${target}` : `${parentPath(path)}/${target}`;
+
+  if (FS[safePath]) {
+    if (FS[safePath].type === 'dir') return { error: 'EISDIR' };
+    if (FS[safePath].owner !== user && user !== 'root') return { error: 'EACCES' };
+    const oldBytes = Buffer.byteLength(FS[safePath].content || '', 'utf8');
+    const usage = fsUsage();
+    if (usage.bytes - oldBytes + bytes > MAX_TOTAL_BYTES) return { error: 'ENOSPC' };
+    FS[safePath].content = safe;
+    FS[safePath].mtime = now();
+    return { ok: true, path: safePath };
   }
-  FS[path] = file(mode, user, content);
-  FS[path].mtime = now();
-  parent.node.children.push(baseName(path));
+  const usage = fsUsage();
+  if (usage.bytes + bytes > MAX_TOTAL_BYTES || usage.count + 1 > MAX_FILES) return { error: 'ENOSPC' };
+  FS[safePath] = file(mode, user, safe);
+  FS[safePath].mtime = now();
+  parent.node.children.push(target);
   parent.node.children.sort();
-  return { ok: true };
+  return { ok: true, path: safePath };
 }
 
 function appendFile(path, content, user) {
+  const safe = sanitizeText(content);
   const hit = nodeAt(path);
   if (hit && hit.node.type === 'dir') return { error: 'EISDIR' };
-  if (!hit) return createFile(path, content, user);
+  if (!hit) return createFile(path, safe, user);
   if (!mayWrite(path, user)) return { error: 'EACCES' };
-  hit.node.content = (hit.node.content || '') + content;
+  const next = (hit.node.content || '') + safe;
+  if (Buffer.byteLength(next, 'utf8') > MAX_FILE_BYTES) return { error: 'EFBIG' };
+  const usage = fsUsage();
+  if (usage.bytes + Buffer.byteLength(safe, 'utf8') > MAX_TOTAL_BYTES) return { error: 'ENOSPC' };
+  hit.node.content = next;
   hit.node.mtime = now();
   return { ok: true };
 }
 
 function makeDir(path, user, mode = 0o755, parents = false) {
+  if (fsUsage().count + 1 > MAX_FILES) return { error: 'ENOSPC' };
   if (FS[path]) return { error: 'EEXIST' };
   let parent = parentDir(path);
   if (!parent && parents) {
@@ -657,5 +697,6 @@ module.exports = {
   normalize, nodeAt, readFile, listDir, isDir, exists, canRead, canExecDir,
   fakeStats, fmtUptime, bootTime, procFile,
   mayWrite, createFile, appendFile, makeDir, removePath, copyPath, renamePath, chmodPath, chownPath, setModeOnly,
+  sanitizeText, sanitizeName, fsUsage, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
 };
 

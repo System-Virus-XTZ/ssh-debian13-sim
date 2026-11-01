@@ -114,6 +114,10 @@ class FakeShell {
     };
     this.aliases = { ll: 'ls -l', la: 'ls -la', l: 'ls -CF' };
     this.pwd = null;   // passwd 交互状态
+    // 空闲超时（默认 5 分钟，可用 SSH_IDLE_MS 覆盖）
+    this.idleMs = Number(process.env.SSH_IDLE_MS || 5 * 60 * 1000);
+    this.idleTimer = null;
+    this.touchIdle();
 
     stream.on('data', (c) => this.onData(c));
     stream.on('close', () => this.close());
@@ -132,6 +136,7 @@ class FakeShell {
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     try { this.stream.end(); } catch {}
     try { this.client.end(); } catch {}
   }
@@ -144,6 +149,16 @@ class FakeShell {
   tilde(p) {
     const h = this.home;
     return p === h ? '~' : p.startsWith(h + '/') ? '~' + p.slice(h.length) : p;
+  }
+
+  touchIdle() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      if (this.closed) return;
+      this.write('\r\nTimeout, server not responding.\r\n');
+      this.close();
+    }, this.idleMs);
+    if (this.idleTimer.unref) this.idleTimer.unref();
   }
 
   start() {

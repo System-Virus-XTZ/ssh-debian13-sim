@@ -147,8 +147,10 @@ function attachFakeSftp(sftp, user = 'guest') {
     const h = getHandle(handleBuf);
     handles.delete(handleBuf.toString('hex'));
     if (h && h.write) {
+      if (h.aborted) return sftp.status(reqid, CODE.FAILURE, 'File too large');
       const r = vfs.createFile(h.path, h.data.toString('utf8'), user);
-      return sftp.status(reqid, r.ok ? CODE.OK : CODE.FAILURE);
+      if (!r.ok) return sftp.status(reqid, CODE.FAILURE, r.error === 'ENOSPC' ? 'No space left on device' : r.error === 'EFBIG' ? 'File too large' : 'Write failed');
+      return sftp.status(reqid, CODE.OK);
     }
     sftp.status(reqid, CODE.OK);
   });
@@ -156,6 +158,12 @@ function attachFakeSftp(sftp, user = 'guest') {
   sftp.on('WRITE', (reqid, handleBuf, offset, data) => {
     const h = getHandle(handleBuf);
     if (!h || !h.write) return sftp.status(reqid, CODE.PERMISSION_DENIED);
+    const projected = h.append ? h.data.length + data.length : Math.max(h.data.length, offset + data.length);
+    // 单文件大小上限
+    if (projected > vfs.MAX_FILE_BYTES) {
+      h.aborted = true;
+      return sftp.status(reqid, CODE.FAILURE, 'File too large');
+    }
     if (h.append) {
       h.data = Buffer.concat([h.data, data]);
     } else {

@@ -23,3 +23,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# 本地账号表（含密码哈希）与封禁数据
+users.json
+data/

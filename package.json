@@ -1,0 +1,14 @@
+{
+  "name": "anxi-ssh-game",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "一个 SSH 互动游戏：连上去就是终端里的小游戏",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
+}

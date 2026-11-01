@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 主机密钥 —— 绝对不能提交
+# 每个部署实例应该自己生成（首次启动 start.sh 会自动跑 ssh-keygen）
+keys/
+*.pem
+*.key
+!*.key.example
+
+# 日志
+*.log
+logs/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo

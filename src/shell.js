@@ -344,7 +344,7 @@ class FakeShell {
           const aliasTokens = tokenize(this.aliases[head]);
           tokens.splice(0, 1, ...aliasTokens);
         }
-        const env = this.expandAll(tokens);
+        const env = this.expandAll(tokens).flatMap((t) => this.globExpand(t));
         const res = this.exec(env, stdin) || { out: '', code: 0 };
         if (res.close) return;
         if (si === stages.length - 1) {
@@ -383,6 +383,38 @@ class FakeShell {
       EEXIST: 'File exists', EISDIR: 'Is a directory', ENOTDIR: 'Not a directory',
       ENOTEMPTY: 'Directory not empty', EPERM: 'Operation not permitted', EBUSY: 'Device or resource busy',
     }[code] || 'Operation not permitted';
+  }
+
+  /** 把含 * ? [ ] 的 token 展开成实际路径（bash 风格：无匹配则保留原样） */
+  globExpand(token) {
+    if (!/[*?\[]/.test(token) || token.includes('/proc/') || token === '/' ) return [token];
+    const slash = token.lastIndexOf('/');
+    const dirPart = slash >= 0 ? token.slice(0, slash + 1) : '';
+    const patPart = slash >= 0 ? token.slice(slash + 1) : token;
+    if (!/[*?\[]/.test(patPart)) return [token];
+    const baseDir = this.resolve(dirPart || '.');
+    const listing = vfs.listDir(baseDir);
+    if (!listing || !listing.entries) return [token];
+
+    const toRegex = (pat) => {
+      let re = '^';
+      for (let i = 0; i < pat.length; i++) {
+        const c = pat[i];
+        if (c === '*') re += '[^/]*';
+        else if (c === '?') re += '[^/]';
+        else if (c === '[') {
+          const end = pat.indexOf(']', i + 1);
+          if (end > i) { re += pat.slice(i, end + 1).replace(/^\[!/, '[^'); i = end; }
+          else re += '\\[';
+        } else re += c.replace(/[.+^${}()|\\]/g, '\\$&');
+      }
+      return new RegExp(re + '$');
+    };
+    const re = toRegex(patPart);
+    const allowDot = patPart.startsWith('.');
+    const hits = listing.entries.filter((e) => (allowDot || !e.startsWith('.')) && re.test(e)).sort();
+    if (!hits.length) return [token];
+    return hits.map((h) => `${dirPart}${h}`);
   }
 
   expandAll(tokens) {
@@ -1536,19 +1568,44 @@ class FakeShell {
   }
 
   cmd_rm({ args }) {
-    const recursive = args.some((a) => a.startsWith('-') && /[rR]/.test(a));
-    const force = args.some((a) => a.startsWith('-') && a.includes('f'));
+    const recursive = args.some((a) => a.startsWith('-') && !a.startsWith('--') && /[rR]/.test(a));
+    const force = args.some((a) => a.startsWith('-') && !a.startsWith('--') && a.includes('f'));
+    const noPreserveRoot = args.includes('--no-preserve-root');
     const files = args.filter((a) => !a.startsWith('-'));
-    if (!files.length) return { err: 'rm: missing operand\r\n', code: 1 };
+    if (!files.length) return { err: 'rm: missing operand\r\nTry \'rm --help\' for more information.\r\n', code: 1 };
     let out = '';
     for (const f of files) {
-      const r = vfs.removePath(this.resolve(f), this.user, recursive);
+      const p = this.resolve(f);
+      // GNU rm 的根目录保护
+      if (p === '/' && recursive) {
+        if (!noPreserveRoot) {
+          out += "rm: it is dangerous to operate recursively on '/'\r\n";
+          out += "rm: use --no-preserve-root to override this failsafe\r\n";
+          continue;
+        }
+        out += this.wipeRoot();
+        continue;
+      }
+      if (p === '/' && !recursive) { out += "rm: cannot remove '/': Is a directory\r\n"; continue; }
+      const r = vfs.removePath(p, this.user, recursive);
       if (r.error === 'ENOENT' && force) continue;
       if (r.error === 'ENOTEMPTY') out += `rm: cannot remove '${f}': Is a directory\r\n`;
-      else if (r.error === 'EBUSY') out += `rm: it is dangerous to operate recursively on '/'\r\n`;
+      else if (r.error === 'EBUSY') out += `rm: cannot remove '${f}': Device or resource busy\r\n`;
       else if (r.error) out += `rm: cannot remove '${f}': ${this.errMsg(r.error)}\r\n`;
     }
     return { out, code: out ? 1 : 0 };
+  }
+
+  /** rm -rf --no-preserve-root / ：模拟系统被删干净（内存里），只留 busy 挂载点 */
+  wipeRoot() {
+    const busy = ['/proc', '/sys', '/dev', '/run'];
+    let out = '';
+    for (const name of [...(vfs.FS['/'].children || [])]) {
+      const p = `/${name}`;
+      if (busy.includes(p)) { out += `rm: cannot remove '${p}': Device or resource busy\r\n`; continue; }
+      vfs.removePath(p, 'root', true);
+    }
+    return out;
   }
 
   cmd_mv({ args }) {

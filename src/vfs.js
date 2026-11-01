@@ -542,8 +542,10 @@ function makeDir(path, user, mode = 0o755, parents = false) {
   return { ok: true };
 }
 
+const BUSY_MOUNTS = ['/proc', '/sys', '/dev', '/run', '/dev/shm', '/dev/pts'];
 function removePath(path, user, recursive = false) {
   if (path === '/') return { error: 'EBUSY' };
+  if (BUSY_MOUNTS.includes(path)) return { error: 'EBUSY' };
   const hit = nodeAt(path);
   if (!hit) return { error: 'ENOENT' };
   const parent = parentDir(path);

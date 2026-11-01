@@ -18,6 +18,10 @@
   权限提示都尽量和真机一致
 - **文件系统可写**：`touch/mkdir/rm/mv/cp/chmod/tee`、`echo > file`、SFTP 上传下载都能用，
   写进的是**内存文件系统**（重启复位），不会真的动磁盘
+- **危险操作按真机处理**：`rm -rf /` 会触发 GNU 的根目录保护（两行报错）；
+  加 `--no-preserve-root` 才会真的清空内存文件系统（`ls /` 只剩 `/proc` `/dev`，重启服务恢复）。
+  支持 shell globbing（`* ? [ ]`），所以 `rm -rf /*` 也是真的逐个删
+- **挂载点保护**：`/proc` `/sys` `/dev` `/run` 删除时返回 `Device or resource busy`
 - **负载数据是随机生成的假数据**：CPU/内存/磁盘/网络每次调用都变（不读真机）
 - **不会弄坏真机**：所有操作只发生在内存里
 - **有权限概念**：`/root`、`/etc/shadow`、`/var/log/*` 对普通用户不可读；`sudo` 会提示不在 sudoers

@@ -53,13 +53,31 @@ const server = new Server(
     ident: 'OpenSSH_10.2p1 Debian-2+deb13u1',
   },
   (client) => {
+    let authFails = 0;
     client.on('authentication', (ctx) => {
-      // 用户名 + 密码都要对上 users.json 里的账号
       const current = loadUsers();      // 每次认证读盘，root 新加的账号立即可用
       const expected = current[ctx.username];
-      if (ctx.method === 'password' && expected !== undefined && verifyPassword(ctx.password, expected)) {
+
+      // 不存在的用户：和真 OpenSSH 一样直接拒绝，不提供可用认证方式，
+      // 客户端因此不会弹密码框（只会显示 Permission denied）
+      if (expected === undefined) {
+        if (process.env.DEBUG) console.error(`[auth] unknown user ${ctx.username}`);
+        return ctx.reject(['publickey']);
+      }
+
+      // 已知用户：只提供 password 方式
+      if (ctx.method !== 'password') return ctx.reject(['password']);
+
+      if (verifyPassword(ctx.password, expected)) {
         client._sshUser = ctx.username;   // 给 session 用
         return ctx.accept();
+      }
+
+      // 密码错误：最多 3 次（类似 sshd 的 MaxAuthTries 行为）
+      authFails++;
+      if (authFails >= 3) {
+        client.end();
+        return;
       }
       return ctx.reject(['password']);
     });
